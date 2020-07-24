@@ -62,7 +62,6 @@ def parse_arguments():
     parser.add_argument('--out_fp', type=str,
         default='~/data/mimic_experiment_writes/bowsgdresults.txt')
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--test_metric_avg', type=str, default='weighted')
     parser.add_argument('--save_model', action='store_true')
 
     return parser.parse_args()
@@ -141,12 +140,13 @@ Best estimator\n{}\nArea under ROC: {:.3f}'''\
     # make predictions
     print('Running chosen SVM model on test set...')
     test_pred = gridsearch_res.predict(X_test)
+    test_score = gridsearch_res.decision_function(X_test)
     true_labels = readm_test.READM.values
     test_acc = mean(asarray((test_pred == true_labels), dtype=int))
-    test_prec = precision_score(true_labels, test_pred, average=args.test_metric_avg)
-    test_rec = recall_score(true_labels, test_pred, average=args.test_metric_avg)
-    test_f1 = f1_score(true_labels, test_pred, average=args.test_metric_avg)
-    test_auroc = roc_auc_score(true_labels, test_pred, average=args.test_metric_avg)
+    test_prec = precision_score(true_labels, test_pred)
+    test_rec = recall_score(true_labels, test_pred)
+    test_f1 = f1_score(true_labels, test_pred)
+    test_auroc = roc_auc_score(true_labels, test_score)
     testres_str = '''\n--- TEST RESULTS ---\nAccuracy {:.4f}\nPrecision {:.4f}
 Recall {:.4f}\nF1 {:.4f}\nAUROC: {:.4f}'''\
         .format(test_acc, test_prec, test_rec, test_f1, test_auroc)
