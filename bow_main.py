@@ -10,6 +10,7 @@ from joblib import dump
 from collections import OrderedDict
 from tqdm import tqdm
 from numpy import asarray, mean
+from util import load_txt_df
 
 
 def aggregate_embeddings(id_vector, tfidf_matrix):
@@ -30,21 +31,6 @@ def aggregate_embeddings(id_vector, tfidf_matrix):
         X = vstack((X, x))
 
     return X
-
-
-def get_text_df(fp):
-    cols = ['SUBJECT_ID', 'HADM_ID', args.var]
-    if args.st_aug:
-        cols.append('SEMTYPES')
-    return pd.read_csv(
-        fp,
-        usecols=cols,
-        dtype={
-            'SUBJECT_ID':object,
-            'HADM_ID':object,
-            args.var:str
-        }
-    )
 
 
 def add_augmented_var(df):
@@ -74,9 +60,17 @@ def main():
 
     print('Loading data...')
     warnings.simplefilter(action='ignore', category=pd.errors.DtypeWarning)
-    notes_train = get_text_df(args.n_train)
+    notes_train = load_txt_df(
+        fp=args.n_train,
+        var=args.var,
+        st_aug=args.st_aug
+    )
     readm_train = pd.read_csv(args.r_train, index_col=0)
-    notes_test = get_text_df(args.n_test)
+    notes_test = load_txt_df(
+        fp=args.n_test,
+        var=args.var,
+        st_aug=args.st_aug
+    )
     readm_test = pd.read_csv(args.r_test, index_col=0)
 
     if args.st_aug:

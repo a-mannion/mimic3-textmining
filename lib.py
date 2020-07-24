@@ -16,6 +16,7 @@ from pytorch_lightning import LightningModule
 from transformers import BertTokenizer, BertForSequenceClassification
 from math import ceil
 from random import sample
+from util import load_txt_df
 
 
 class W2VEmbedAggregate(object):
@@ -80,39 +81,49 @@ class MIMICWord2VecReadmissionPredictor(object):
         self.test_chunksize = test_chunksize
         self.db = db
 
-    def _load_data(self, corpus_fp, readm_fp, chunksize, adapt_for_gridsearch=False):
-        cols = ['SUBJECT_ID', 'HADM_ID', self.txtvar]
-        dtypes = {}
-        for c in cols:
-            dtypes[c] = str
-        if self.st_aug:
-            cols.append('SEMTYPES')
-            dtypes['SEMTYPES'] = str
-        corpus_df = read_csv(
-            corpus_fp,
-            index_col=0,
-            usecols=cols,
-            dtype=dtypes,
-            chunksize=chunksize
-        )
+    def _load_data(self, corpus_fp, readm_fp, chunksize=None, adapt_for_gridsearch=False):
         readm_df = read_csv(readm_fp, index_col=0)
-        patient_ids = []
-        text = []
-        readm_df = read_csv(readm_fp, index_col=0)
-        for chunk in corpus_df:
-            chunk = chunk[chunk.index.isin(readm_df.index)]
-            patient_ids += chunk.index.get_level_values(0).tolist()
-            if sum(isna(chunk[self.txtvar])) > 0:
-                chunk[self.txtvar] = chunk[self.txtvar].fillna('')
+        if chunksize is not None:
+            cols = ['SUBJECT_ID', 'HADM_ID', self.txtvar]
+            dtypes = {}
+            for c in cols:
+                dtypes[c] = str
             if self.st_aug:
-                chunk = chunk.assign(
-                    **{self.txtvar:chunk[self.txtvar]+chunk.SEMTYPES.fillna('')}
-                )
-                chunk.drop('SEMTYPES', axis=1, inplace=True)
-            for note in chunk[self.txtvar]:
-                text.append(word_tokenize(note))
-            if self.db:
-                break
+                cols.append('SEMTYPES')
+                dtypes['SEMTYPES'] = str
+            corpus_df = read_csv(
+                corpus_fp,
+                index_col=0,
+                usecols=cols,
+                dtype=dtypes,
+                chunksize=chunksize
+            )
+            patient_ids = []
+            text = []
+            readm_df = read_csv(readm_fp, index_col=0)
+            for chunk in corpus_df:
+                chunk = chunk[chunk.index.isin(readm_df.index)]
+                patient_ids += chunk.index.get_level_values(0).tolist()
+                if sum(isna(chunk[self.txtvar])) > 0:
+                    chunk[self.txtvar] = chunk[self.txtvar].fillna('')
+                if self.st_aug:
+                    chunk = chunk.assign(
+                        **{self.txtvar:chunk[self.txtvar]+chunk.SEMTYPES.fillna('')}
+                    )
+                    chunk.drop('SEMTYPES', axis=1, inplace=True)
+                for note in chunk[self.txtvar]:
+                    text.append(word_tokenize(note))
+                if self.db:
+                    break
+        else:
+            corpus_df = load_txt_df(
+                fp=corpus_fp,
+                var=self.txtvar,
+                st_aug=self.st_aug,
+                _slice=2*self.batch_size if self.db else None
+            )
+            text = corpus_df[var].apply(word_tokenize).tolist()
+            patient_ids = corpus_df.SUBJECT_ID.tolist()
 
         # labels have to be the same length as train data for the pipeline
         # make sure that labels are ordered according to the patient IDs in the text dataset
@@ -378,31 +389,15 @@ class MIMICBERTReadmissionPredictor(LightningModule):
 
     def setup(self, stage):
 
-        def _load_txt_df(fp): # to be put in an external util script later
-            cols = ['SUBJECT_ID', 'HADM_ID', self.txtvar]
-            types = {
-                'SUBJECT_ID':int,
-                'HADM_ID':object,
-                self.txtvar:str
-            }
-            if self.st_aug:
-                cols.append('SEMTYPES')
-                types['SEMTYPES'] = str
-            df = read_csv(
-                fp,
-                usecols=cols,
-                dtype=types,
-                nrows=self.batch_size if self.db else None
-            )
-            if sum(isna(df[self.txtvar])) > 0:
-                df[self.txtvar] = df[self.txtvar].fillna('')
-
-            return df
-
         def _dataframe_setup(nfp, rfp, split=True):
             if self.verbose:
                 print('Reading data from .csv...')
-            text_df = _load_txt_df(nfp)
+            text_df = load_txt_df(
+                fp=nfp,
+                var=self.txtvar,
+                st_aug=self.st_aug,
+                _slice=2*self.batch_size if self.db else None
+            )
             labelled_text = text_df.merge(read_csv(rfp, index_col=0), on='SUBJECT_ID', how='left')
 
             # add semantic type codes if specified
