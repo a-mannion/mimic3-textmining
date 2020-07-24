@@ -330,7 +330,7 @@ class EncodedDataset(data.Dataset):
         }
 
 
-class MIMICReadmissionPredictor(LightningModule):
+class MIMICBERTReadmissionPredictor(LightningModule):
     '''This class implements model hooks into the Pytorch-Lightning framework, basically
     a wrapper around Pytorch module functionality'''
 

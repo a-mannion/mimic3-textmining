@@ -1,5 +1,5 @@
 import argparse
-from bert_lib_mimic import MIMICReadmissionPredictor
+from lib import MIMICBERTReadmissionPredictor
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from torch import cuda, save
@@ -17,7 +17,7 @@ def run(txtvar, st_aug, data_dir, logdir, n_gpus):
     print('=========')
     print(msg1)
     s = time()
-    model = MIMICReadmissionPredictor(
+    model = MIMICBERTReadmissionPredictor(
         n_train_fp=os.path.join(data_dir, 'notes_train_seeded.csv'),
         r_train_fp=os.path.join(data_dir, 'readmission_train_seeded.csv'),
         n_test_fp=os.path.join(data_dir, 'notes_test_seeded.csv'),
