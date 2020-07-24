@@ -19,6 +19,10 @@ from random import sample
 from util import load_txt_df
 
 
+###################################
+# WORD2VEC IMPLEMENTATION CLASSES #
+###################################
+
 class W2VEmbedAggregate(object):
     '''Object that implements scikit-learn style methods to compute Word2Vec embeddings
     and aggregate across notes/patients'''
@@ -61,7 +65,7 @@ class W2VEmbedAggregate(object):
                 X[i,:] = np.zeros(dim*3)
             else:
                 note_array = np.array(note_list).reshape((len(note_list), dim))
-                X[i, :] = _concat_aggreg(note_array)
+                X[i,:] = _concat_aggreg(note_array)
 
         if assign_to_attr:
             self.note_level_aggregations = X
@@ -249,10 +253,10 @@ class MIMICWord2VecReadmissionPredictor(object):
         )
         test_pred = self.clf.predict(X)
         test_scores = self.clf.decision_function(X)
-        test_prec = precision_score(self.test_labels, test_pred, average='weighted')
-        test_recall = recall_score(self.test_labels, test_pred, average='weighted')
-        test_f1 = f1_score(self.test_labels, test_pred, average='weighted')
-        test_auroc = roc_auc_score(self.test_labels, test_scores, average='weighted')
+        test_prec = precision_score(self.test_labels, test_pred)
+        test_recall = recall_score(self.test_labels, test_pred)
+        test_f1 = f1_score(self.test_labels, test_pred)
+        test_auroc = roc_auc_score(self.test_labels, test_scores)
 
         if out_fp is not None:
             with open(out_fp, 'w+') as model_desc:
@@ -270,6 +274,10 @@ W2V Params:\n{}, LR {:.4f}, dim {:d}, window {:d}, epochs {:d}
         if save_model_fp is not None:
             self.w2v_agg_model.embedding(save_model_fp)
 
+
+###############################
+# BERT IMPLEMENTATION CLASSES #
+###############################
 
 class EncodedDataset(data.Dataset):
     '''Pytorch-inherited dataset class that tokenizes the text batch-by-batch as
@@ -356,7 +364,6 @@ class MIMICBERTReadmissionPredictor(LightningModule):
             'n_train_fp', 'r_train_fp', 'n_test_fp', 'r_test_fp', # data file paths
             'val_frac', 'batch_size', 'threads', # implementation arguments
             'bert_model', 'txtvar', 'seqlen', 'st_aug', 'scale_factor', # language-model arguments
-            'test_metric_avg', # how to tell sklearn to account for class imbalance in the test set
             'db', # boolean - debug mode
             'write_test_results_to',
             'update_all_params', # bool: update the entire BERT model rather than just fine-tuning the final layer
@@ -366,7 +373,6 @@ class MIMICBERTReadmissionPredictor(LightningModule):
         # default arguments
         self.scale_factor = 2.0
         self.threads = torch.get_num_threads()
-        self.test_metric_avg = 'weighted'
         self.db = False
         self.write_test_results_to = None
         self.update_all_params = False
@@ -487,12 +493,20 @@ class MIMICBERTReadmissionPredictor(LightningModule):
         acc = (predictions == patient_labels).float()
         labels_np = patient_labels.detach().numpy()
         predictions_np = predictions.detach().numpy()
-        prec = precision_score(labels_np, predictions_np, average=self.test_metric_avg)
-        recall = recall_score(labels_np, predictions_np, average=self.test_metric_avg)
-        f1 = f1_score(labels_np, predictions_np, average=self.test_metric_avg)
-        auroc = roc_auc_score(labels_np, predictions_np, average=self.test_metric_avg)
+        prec = precision_score(labels_np, predictions_np)
+        recall = recall_score(labels_np, predictions_np)
+        f1 = f1_score(labels_np, predictions_np)
+        auroc = roc_auc_score(labels_np, predictions_np)
 
-        return {'loss':loss, 'acc':acc, 'prec':prec, 'recall':recall, 'f1':f1, 'auroc':auroc, 'log':{'test_loss':loss}}
+        return {
+            'loss':loss,
+            'acc':acc,
+            'prec':prec,
+            'recall':recall,
+            'f1':f1,
+            'auroc':auroc,
+            'log':{'test_loss':loss}
+        }
 
     def test_epoch_end(self, outputs):
         loss = torch.cat([o['loss'] for o in outputs]).mean()
