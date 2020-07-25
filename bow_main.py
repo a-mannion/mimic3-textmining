@@ -7,7 +7,7 @@ from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
 from scipy.sparse import vstack
 from joblib import dump
-from collections import OrderedDict
+from collections import defaultdict
 from tqdm import tqdm
 from numpy import asarray, mean
 from util import load_txt_df
@@ -15,14 +15,11 @@ from util import load_txt_df
 
 def aggregate_embeddings(id_vector, tfidf_matrix):
     # I wasn't sure how pandas groupby+add would deal with scipy.sparse.csc
-    # matrices so I just added them into an ordered dictionary...
+    # matrices so I just added them into a dictionary...
     assert(len(id_vector) == tfidf_matrix.shape[0])
-    tfidf_map = OrderedDict()
+    tfidf_map = defaultdict()
     for patient, vector in tqdm(zip(id_vector, tfidf_matrix), total=len(id_vector)):
-        if patient not in tfidf_map:
-            tfidf_map[patient] = vector
-        else:
-            tfidf_map[patient] += vector
+        tfidf_map[patient] += vector
 
     # ... and then stacked the dictionary values back to a matrix
     print('stacking matrix...')
