@@ -1,23 +1,9 @@
 import pandas as pd
-import argparse
-import warnings
+from argparse import ArgumentParser
+from warnings import simplefilter
 
 
-def parse_arguments():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('rdf_in', type=str)
-    parser.add_argument('ddir', type=str)
-    parser.add_argument('--frac', type=float, default=0.2)
-    parser.add_argument('--seed', type=int, default=18520)
-
-    return parser.parse_args()
-
-
-if __name__ == '__main__':
-    warnings.simplefilter(action='ignore', category=FutureWarning)
-    warnings.simplefilter(action='ignore', category=pd.errors.DtypeWarning)
-
-    args = parse_arguments()
+def main(args):
     assert((args.frac > 0.0) and (args.frac <= 0.4))
 
     ndf = pd.read_csv('../data/mimic_experiment_writes/all_data.csv',
@@ -52,3 +38,16 @@ if __name__ == '__main__':
 
     ndf[~ndf.SUBJECT_ID.isin(holdout_patients)].to_csv(args.ddir+'notes_train.csv', index=False)
     ndf[ndf.SUBJECT_ID.isin(holdout_patients)].to_csv(args.ddir+'notes_test.csv', index=False)
+
+
+if __name__ == '__main__':
+    simplefilter(action='ignore', category=FutureWarning)
+    simplefilter(action='ignore', category=pd.errors.DtypeWarning)
+
+    parser = ArgumentParser()
+    parser.add_argument('rdf_in', type=str)
+    parser.add_argument('ddir', type=str)
+    parser.add_argument('--frac', type=float, default=0.2)
+    parser.add_argument('--seed', type=int, default=18520)
+
+    main(parser.parse_args())

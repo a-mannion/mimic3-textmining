@@ -1,6 +1,6 @@
 import re
 import nltk
-import argparse
+from argparse import ArgumentParser
 from nltk.corpus import stopwords
 from pandas import read_csv
 from quickumls import QuickUMLS
@@ -8,37 +8,8 @@ from operator import itemgetter
 from tqdm import tqdm
 
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(prog='mimicnotes2umls.py', description='''Reads MIMIC-III NOTEEVENTS file
-        and maps relevant terms to UMLS concepts''')
-    parser.add_argument('noteevents_fp', type=str, help='path to NOTEEVENTS.csv')
-    parser.add_argument('qumls_fp', type=str, help='path to QuickUMLS data')
-    parser.add_argument('-g', dest='granularity', type=str, default='N', help='''granularity at which to pass
-        terms to the UMLS matcher. Three possible values; N (note - default), S (sentence), or W (word)''')
-    parser.add_argument('-t', dest='thresh', type=float, default=0.7, help='''Score threshold for the QuickUMLS
-        matching function, default 0.7''')
-    parser.add_argument('-s', dest='sim', type=str, default='jaccard', help='''String specifying the type of
-        similarity measure to be passed to the QuickUMLS matcher, default "jaccard"''')
-    parser.add_argument('-a', dest='attr', type=str, default='all', choices=['term', 'cui', 'semtypes', 'all'],
-        help='''Attribute of QuickUMLS return list to extract - the default is "all"''')
-    parser.add_argument('-o', dest='outfilepath', type=str, default='umls_noteevents', help='''Optional output file
-        path for the cleaned csv''')
-    parser.add_argument('-r', dest='skiplims', nargs='+', type=int, help='''To only use a subset of the MIMIC-III notes
-        file, list start and end points (line numbers) delimiting sections of the file for pandas.read_csv to skip when
-        reading it''')
-    parser.add_argument('-ks', dest='keep_similarity', action='store_true', help='''Include this flag to keep the
-        similarity scores of each UMLS concept found to be used in the aggregation step''')
-    parser.add_argument('-ff', dest='filter_semtypes_file', type=str, default=None, help='''Include this
-        flag to create another output file with certain semantic types removed (along with the path to a file
-        containing the list of semantic type identifiers to NOT use) - only works for "all" option of the -a flag.''')
-
-    return parser.parse_args()
-
-
-def main():
+def main(args):
     print('=============')
-    global args
-    args = parse_arguments()
     if args.granularity not in ['N', 'S', 'W']:
         raise TypeError('Invalid value for the granularity - should be N, S, or W')
 
@@ -176,4 +147,27 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = ArgumentParser(prog='mimicnotes2umls.py', description='''Reads MIMIC-III NOTEEVENTS file
+        and maps relevant terms to UMLS concepts''')
+    parser.add_argument('noteevents_fp', type=str, help='path to NOTEEVENTS.csv')
+    parser.add_argument('qumls_fp', type=str, help='path to QuickUMLS data')
+    parser.add_argument('-g', dest='granularity', type=str, default='N', help='''granularity at which to pass
+        terms to the UMLS matcher. Three possible values; N (note - default), S (sentence), or W (word)''')
+    parser.add_argument('-t', dest='thresh', type=float, default=0.7, help='''Score threshold for the QuickUMLS
+        matching function, default 0.7''')
+    parser.add_argument('-s', dest='sim', type=str, default='jaccard', help='''String specifying the type of
+        similarity measure to be passed to the QuickUMLS matcher, default "jaccard"''')
+    parser.add_argument('-a', dest='attr', type=str, default='all', choices=['term', 'cui', 'semtypes', 'all'],
+        help='''Attribute of QuickUMLS return list to extract - the default is "all"''')
+    parser.add_argument('-o', dest='outfilepath', type=str, default='umls_noteevents', help='''Optional output file
+        path for the cleaned csv''')
+    parser.add_argument('-r', dest='skiplims', nargs='+', type=int, help='''To only use a subset of the MIMIC-III notes
+        file, list start and end points (line numbers) delimiting sections of the file for pandas.read_csv to skip when
+        reading it''')
+    parser.add_argument('-ks', dest='keep_similarity', action='store_true', help='''Include this flag to keep the
+        similarity scores of each UMLS concept found to be used in the aggregation step''')
+    parser.add_argument('-ff', dest='filter_semtypes_file', type=str, default=None, help='''Include this
+        flag to create another output file with certain semantic types removed (along with the path to a file
+        containing the list of semantic type identifiers to NOT use) - only works for "all" option of the -a flag.''')
+
+    main(parser.parse_args())

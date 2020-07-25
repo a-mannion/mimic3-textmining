@@ -1,23 +1,12 @@
 import re
-import argparse
+from argparse import ArgumentParser
 from nltk import word_tokenize, sent_tokenize
 from nltk.corpus import stopwords
 from pandas import DataFrame, read_csv
 from sys import stdout
 
 
-def parse_arguments():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('input_fp', type=str, help='path to NOTEEVENTS file')
-    parser.add_argument('-n', dest='notes_output_name', type=str, default='cleaned-noteevents.csv',
-        help='path for output .csv file containing cleaned notes')
-
-    return parser.parse_args()
-
-
-def main():
-    args = parse_arguments()
-
+def main(args):
     print('==========')
     cols = ['SUBJECT_ID', 'HADM_ID', 'TEXT']
     dtypes = {}
@@ -49,4 +38,9 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = ArgumentParser()
+    parser.add_argument('input_fp', type=str, help='path to NOTEEVENTS file')
+    parser.add_argument('-n', dest='notes_output_name', type=str, default='cleaned-noteevents.csv',
+        help='path for output .csv file containing cleaned notes')
+
+    main(parser.parse_args())

@@ -1,25 +1,9 @@
-import argparse
 import pandas as pd
+from argparse import ArgumentParser
 from tqdm import tqdm
 
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(prog='make_readmission_variable.py',
-        description='Generate labels for the readmission prediction task')
-    parser.add_argument('adm_fp', type=str, help='path to admissions .csv file')
-    parser.add_argument('notes_fp', type=str, help='''path to note events .csv file
-        (cleaned text version)''')
-    parser.add_argument('--out_fp', default='patient_readmission_labels.csv',
-        help='path to output admissions .csv')
-    parser.add_argument('--prev_fp', default='readmission_prevalence.txt',
-        help='path to text file with the readmission prevalence percentage')
-
-    return parser.parse_args()
-
-
-def main():
-    args = parse_arguments()
-
+def main(args):
     # get data
     print('===========')
     print('Reading data...')
@@ -82,4 +66,14 @@ Readmission Prevalence: {:.1f}%
 
 
 if __name__ == '__main__':
-    main()
+    parser = ArgumentParser(prog='make_readmission_variable.py',
+        description='Generate labels for the readmission prediction task')
+    parser.add_argument('adm_fp', type=str, help='path to admissions .csv file')
+    parser.add_argument('notes_fp', type=str, help='''path to note events .csv file
+        (cleaned text version)''')
+    parser.add_argument('--out_fp', default='patient_readmission_labels.csv',
+        help='path to output admissions .csv')
+    parser.add_argument('--prev_fp', default='readmission_prevalence.txt',
+        help='path to text file with the readmission prevalence percentage')
+
+    main(parser.parse_args())
