@@ -1,9 +1,10 @@
-import numpy as np
 import torch
 import torch.utils.data as data
 from torch.optim import SGD
 from torch.optim.lr_scheduler import CyclicLR
 from torch.nn import CrossEntropyLoss
+import numpy as np
+import pytorch_lightning as pl
 from pandas import DataFrame, read_csv, isna
 from nltk import word_tokenize
 from collections import OrderedDict
@@ -12,11 +13,11 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
-from pytorch_lightning import LightningModule
 from transformers import BertTokenizer, BertForSequenceClassification
 from math import ceil
 from random import sample
 from util import load_txt_df
+from pkg_resources import parse_version
 
 
 ###################################
@@ -349,16 +350,16 @@ class EncodedDataset(data.Dataset):
         }
 
 
-class MIMICBERTReadmissionPredictor(LightningModule):
+class MIMICBERTReadmissionPredictor(pl.LightningModule):
     '''This class implements model hooks into the Pytorch-Lightning framework, basically
     a wrapper around Pytorch module functionality'''
 
     def __init__(self, **kwargs):
         super().__init__()
 
-        # if parse_version(pl.__version__) < parse_version('0.8.1'):
-        #     raise RuntimeError('''This implementation requires Pytorch-Lightning version
-        #         0.8.1 or later''')
+        if parse_version(pl.__version__) < parse_version('0.8.1'):
+            raise RuntimeError('''This implementation requires Pytorch-Lightning version
+                0.8.1 or later''')
 
         params = [
             'n_train_fp', 'r_train_fp', 'n_test_fp', 'r_test_fp', # data file paths
