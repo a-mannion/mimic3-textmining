@@ -87,48 +87,38 @@ class MIMICWord2VecReadmissionPredictor(object):
         self.db = db
 
     def _load_data(self, corpus_fp, readm_fp, chunksize=None, adapt_for_gridsearch=False):
+        cols = ['SUBJECT_ID', 'HADM_ID', self.txtvar]
+        dtypes = {}
+        for c in cols:
+            dtypes[c] = str
+        if self.st_aug:
+            cols.append('SEMTYPES')
+            dtypes['SEMTYPES'] = str
+        corpus_df = read_csv(
+            corpus_fp,
+            index_col=0,
+            usecols=cols,
+            dtype=dtypes,
+            chunksize=chunksize
+        )
         readm_df = read_csv(readm_fp, index_col=0)
-        if chunksize is not None:
-            cols = ['SUBJECT_ID', 'HADM_ID', self.txtvar]
-            dtypes = {}
-            for c in cols:
-                dtypes[c] = str
+        patient_ids = []
+        text = []
+        readm_df = read_csv(readm_fp, index_col=0)
+        for chunk in corpus_df:
+            chunk = chunk[chunk.index.isin(readm_df.index)]
+            patient_ids += chunk.index.get_level_values(0).tolist()
+            if sum(isna(chunk[self.txtvar])) > 0:
+                chunk[self.txtvar] = chunk[self.txtvar].fillna('')
             if self.st_aug:
-                cols.append('SEMTYPES')
-                dtypes['SEMTYPES'] = str
-            corpus_df = read_csv(
-                corpus_fp,
-                index_col=0,
-                usecols=cols,
-                dtype=dtypes,
-                chunksize=chunksize
-            )
-            patient_ids = []
-            text = []
-            readm_df = read_csv(readm_fp, index_col=0)
-            for chunk in corpus_df:
-                chunk = chunk[chunk.index.isin(readm_df.index)]
-                patient_ids += chunk.index.get_level_values(0).tolist()
-                if sum(isna(chunk[self.txtvar])) > 0:
-                    chunk[self.txtvar] = chunk[self.txtvar].fillna('')
-                if self.st_aug:
-                    chunk = chunk.assign(
-                        **{self.txtvar:chunk[self.txtvar]+chunk.SEMTYPES.fillna('')}
-                    )
-                    chunk.drop('SEMTYPES', axis=1, inplace=True)
-                for note in chunk[self.txtvar]:
-                    text.append(word_tokenize(note))
-                if self.db:
-                    break
-        else:
-            corpus_df = load_txt_df(
-                fp=corpus_fp,
-                var=self.txtvar,
-                st_aug=self.st_aug,
-                _slice=2*self.batch_size if self.db else None
-            )
-            text = corpus_df[var].apply(word_tokenize).tolist()
-            patient_ids = corpus_df.SUBJECT_ID.tolist()
+                chunk = chunk.assign(
+                    **{self.txtvar:chunk[self.txtvar]+chunk.SEMTYPES.fillna('')}
+                )
+                chunk.drop('SEMTYPES', axis=1, inplace=True)
+            for note in chunk[self.txtvar]:
+                text.append(word_tokenize(note))
+            if self.db:
+                break
 
         # labels have to be the same length as train data for the pipeline
         # make sure that labels are ordered according to the patient IDs in the text dataset
@@ -140,7 +130,7 @@ class MIMICWord2VecReadmissionPredictor(object):
 
         # order the labels to be correspond to the output of patient aggregations
         labels = []
-        unique_id_list = list(OrderedDict.fromkeys(patient_ids))
+        unique_id_list = list(dict.fromkeys(patient_ids))
         for p_id in unique_id_list:
             labels.append(input_labels[readm_df.index.tolist().index(p_id)])
 
@@ -152,9 +142,9 @@ class MIMICWord2VecReadmissionPredictor(object):
                 except KeyError:
                     continue
 
-            return patient_ids, text, labels, gridsearch_labels
+            return np.array(patient_ids), text, np.array(labels), np.array(gridsearch_labels)
         else:
-            return patient_ids, text, labels
+            return np.array(patient_ids), text, np.array(labels)
 
     def _load_train_data(self, corpus_fp, readm_fp, chunksize, adapt_for_gridsearch):
         self.train_patient_ids, self.train_text, self.train_labels, self.gridsearch_labels =\
@@ -205,29 +195,38 @@ class MIMICWord2VecReadmissionPredictor(object):
         self.w2v_agg_model = gridsearch_res.best_estimator_.named_steps['embed_agg']
         self.clf = gridsearch_res.best_estimator_.named_steps['clf']
 
-    def _patient_aggregation(self, note_vectors):
+    def _patient_aggregation(self, note_vectors, labels=None):
         dim = self.w2v_agg_model.embedding.wv.vector_size
-        patient_to_nv_map = OrderedDict()
-        for p_id, vector in zip(self.train_patient_ids, note_vectors):
-            if p_id not in patient_to_nv_map:
-                patient_to_nv_map[p_id] = vector
-            else:
-                patient_to_nv_map[p_id] = np.vstack((patient_to_nv_map[p_id], vector))
+        patient_to_nv_map = {}
+        patient_labels = []
+        if labels is not None:
+            for p_id, vector, lab in zip(self.train_patient_ids, note_vectors, labels):
+                if p_id not in patient_to_nv_map:
+                    patient_to_nv_map[p_id] = vector
+                    patient_labels.append(lab)
+                else:
+                    patient_to_nv_map[p_id] = np.vstack((patient_to_nv_map[p_id], vector))
+        else:
+            for p_id, vector in zip(self.train_patient_ids, note_vectors):
+                if p_id not in patient_to_nv_map:
+                    patient_to_nv_map[p_id] = vector
+                else:
+                    patient_to_nv_map[p_id] = np.vstack((patient_to_nv_map[p_id], vector))
         X = np.empty((len(patient_to_nv_map), dim))
         i = 0
         for array in patient_to_nv_map.values():
             X[i,:] = np.mean(array, 0)
             i += 1
 
-        return X
+        return X, np.array(patient_labels)
 
-    def train(self, text=None, labels=None):
+    def train(self, text=None, labels=None, out_fp=None):
         if text is not None and labels is not None:
             # TODO assume we're running the full pipeline from scratch and instantiate a new embed-and-aggregate object
             pass
         else:
             # get note-level vectors and take the mean over them for each patient
-            X = self._patient_aggregation(
+            X, _ = self._patient_aggregation(
                 self.w2v_agg_model.note_level_aggregations
             )
 
@@ -246,11 +245,35 @@ class MIMICWord2VecReadmissionPredictor(object):
             if alpha_gridsearch_res.best_estimator_.alpha != current_lr:
                 self.clf.alpha = alpha_gridsearch_res.best_estimator_.alpha
 
+            if out_fp is not None:
+                dev_pred = self.clf.predict(X)
+                dev_score = self.clf.decision_function(X)
+                dev_prec = precision_score(self.train_labels, dev_pred, average='weighted')
+                dev_recall = recall_score(self.train_labels, dev_pred, average='weighted')
+                dev_f1 = f1_score(self.train_labels, dev_pred, average='weighted')
+                dev_auroc = roc_auc_score(self.train_labels, dev_score, average='weighted')
+                with open(out_fp, 'w+') as model_desc:
+                    model_desc.write(
+                        f'''Word2Vec-based test results\nVariable {self.txtvar}
+Semantic types: {'yes' if self.st_aug else 'no'}\n\n---\nPipeline\n---{self.w2v_agg_model}
+{self.clf}\nW2V Params:
+{'skip-gram' if self.w2v_agg_model.embedding.sg == 1 else 'CBOW'}
+W2V LR {self.w2v_agg_model.embedding.alpha}
+SGD LR {self.w2v_agg_model.alpha}
+dim {self.w2v_agg_model.embedding.wv.vector_size}
+window {self.w2v_agg_model.embedding.window}
+epochs {self.w2v_agg_model.embedding.iter}\n-- DEVELOPMENT RESULTS --
+\n---\nScores\n---\nPrecision {dev_prec}, Recall {dev_recall}, F1 = {dev_f1}, AUROC {dev_auroc}'''
+
+
     def test(self, corpus_fp, readm_fp, out_fp=None, save_model_fp=None):
         self._load_test_data(corpus_fp, readm_fp)
-        self.w2v_agg_model.embedding.train(self.test_text)
-        X = self._patient_aggregation(
-            self.w2v_agg_model.transform(self.test_text, assign_to_attr=False)
+        self.w2v_agg_model.embedding.train(
+            self.test_text, total_examples=len(self.test_text), epochs=5
+        )
+        X, test_labels = self._patient_aggregation(
+            self.w2v_agg_model.transform(self.test_text, assign_to_attr=False),
+            labels=self.test_labels
         )
         test_pred = self.clf.predict(X)
         test_scores = self.clf.decision_function(X)
@@ -262,18 +285,19 @@ class MIMICWord2VecReadmissionPredictor(object):
         if out_fp is not None:
             with open(out_fp, 'w+') as model_desc:
                 model_desc.write(
-                    '''Word2Vec-based test results\nVariable {}\nSemantic types: {}\n\n---\nPipeline\n---{}\n{}\n
-W2V Params:\n{}, LR {:.4f}, dim {:d}, window {:d}, epochs {:d}
-\n---\nScores\n---\nPrecision {:.4f}, Recall {:.4f}, F1 = {:.4f}, AUROC {:.4f}'''\
-                        .format(self.txtvar, 'yes' if self.st_aug else 'no', self.w2v_agg_model, self.clf,
-                            'skip-gram' if self.w2v_agg_model.embedding.sg == 1 else 'CBOW', self.w2v_agg_model.alpha,
-                            self.w2v_agg_model.size, self.w2v_agg_model.window, self.w2v_agg_model.iter, test_prec,
-                            test_recall, test_f1, test_auroc
-                        )
+                    f'''Word2Vec-based test results\nVariable {self.txtvar}
+Semantic types: {'yes' if self.st_aug else 'no'}\n\n---\nPipeline\n---{self.w2v_agg_model}
+{self.clf}\nW2V Params:
+{'skip-gram' if self.w2v_agg_model.embedding.sg == 1 else 'CBOW'}
+LR {self.w2v_agg_model.embedding.alpha}
+dim {self.w2v_agg_model.embedding.wv.vector_size}
+window {self.w2v_agg_model.embedding.window}
+epochs {self.w2v_agg_model.embedding.iter}\n-- TEST RESULTS --
+\n---\nScores\n---\nAccuracy {test_acc}, Precision {test_prec}, Recall {test_recall}, F1 = {test_f1}, AUROC {test_auroc}'''
                 )
 
         if save_model_fp is not None:
-            self.w2v_agg_model.embedding(save_model_fp)
+            self.w2v_agg_model.embedding.save(save_model_fp)
 
 
 ###############################
@@ -370,6 +394,7 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
             'update_all_params', # bool: update the entire BERT model rather than just fine-tuning the final layer
             'verbose' #bool
         ]
+        # TODO: add sequence length parameter
 
         # default arguments
         self.scale_factor = 2.0
