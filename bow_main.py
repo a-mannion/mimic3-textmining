@@ -1,6 +1,6 @@
 import pandas as pd
 import argparse
-import warnings
+from warnings import simplefilter
 from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.linear_model import SGDClassifier
@@ -30,33 +30,10 @@ def aggregate_embeddings(id_vector, tfidf_matrix):
     return X
 
 
-def add_augmented_var(df):
-    df[args.var+'_ST'] = df[args.var]+df['SEMTYPES']
-
-
-def parse_arguments():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('n_train', type=str)
-    parser.add_argument('n_test', type=str)
-    parser.add_argument('r_train', type=str)
-    parser.add_argument('r_test', type=str)
-    parser.add_argument('var', type=str)
-    parser.add_argument('--st_aug', action='store_true')
-    parser.add_argument('--out_fp', type=str,
-        default='~/data/mimic_experiment_writes/bowsgdresults.txt')
-    parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--save_model', action='store_true')
-
-    return parser.parse_args()
-
-
-def main():
+def main(args):
     print('=======================')
-    global args
-    args = parse_arguments()
 
     print('Loading data...')
-    warnings.simplefilter(action='ignore', category=pd.errors.DtypeWarning)
     notes_train = load_txt_df(
         fp=args.n_train,
         var=args.var,
@@ -72,9 +49,8 @@ def main():
 
     if args.st_aug:
         print('Adding semantic types to '+args.var)
-        add_augmented_var(notes_train)
-        add_augmented_var(notes_test)
-        args.var += '_ST'
+        notes_train = augment_var(notes_train, args.var)
+        notes_test = augment_var(notes_test, args.var)
 
     # stack text data together to train embeddings
     all_notes = pd.concat((notes_train, notes_test))
@@ -102,8 +78,12 @@ def main():
     print('Testing different SVM models...\n')
     grid_sgd = GridSearchCV(
         SGDClassifier(random_state=args.seed),
-        param_grid=[{'alpha':[10**i for i in range(-4, 1)],
-                     'penalty':['l2', 'elasticnet']}],
+        param_grid=[
+            {
+                'alpha':[10**i for i in range(-4, 1)],
+                'penalty':['l2', 'elasticnet']
+            }
+        ],
         refit=True,
         n_jobs=-1,
         scoring='roc_auc',
@@ -151,4 +131,22 @@ Recall {:.4f}\nF1 {:.4f}\nAUROC: {:.4f}'''\
 
 
 if __name__ == '__main__':
-    main()
+    simplefilter(action='ignore', category=FutureWarning)
+    simplefilter(action='ignore', category=pd.errors.DtypeWarning)
+
+    global augment_var
+    augment_var = lambda df, v: df.assign(**{v:df[v]+df.SEMTYPES})
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('n_train', type=str)
+    parser.add_argument('n_test', type=str)
+    parser.add_argument('r_train', type=str)
+    parser.add_argument('r_test', type=str)
+    parser.add_argument('var', type=str)
+    parser.add_argument('--st_aug', action='store_true')
+    parser.add_argument('--out_fp', type=str,
+        default='~/data/mimic_experiment_writes/bowsgdresults.txt')
+    parser.add_argument('--seed', type=int, default=1)
+    parser.add_argument('--save_model', action='store_true')
+
+    main(parser.parse_args())
