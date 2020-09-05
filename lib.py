@@ -5,6 +5,7 @@ from torch.optim.lr_scheduler import CyclicLR
 from torch.nn import CrossEntropyLoss
 import numpy as np
 import pytorch_lightning as pl
+import pytorch_lightning.metrics.classification as M
 from pandas import DataFrame, read_csv, isna
 from nltk import word_tokenize
 from collections import OrderedDict
@@ -264,6 +265,7 @@ dim {self.w2v_agg_model.embedding.wv.vector_size}
 window {self.w2v_agg_model.embedding.window}
 epochs {self.w2v_agg_model.embedding.iter}\n-- DEVELOPMENT RESULTS --
 \n---\nScores\n---\nPrecision {dev_prec}, Recall {dev_recall}, F1 = {dev_f1}, AUROC {dev_auroc}'''
+                        )
 
 
     def test(self, corpus_fp, readm_fp, out_fp=None, save_model_fp=None):
@@ -308,7 +310,7 @@ class EncodedDataset(data.Dataset):
     '''Pytorch-inherited dataset class that tokenizes the text batch-by-batch as
     it is passed to the dataloader to save RAM'''
 
-    def __init__(self, df, bert_model, txtvar):
+    def __init__(self, df, bert_model, txtvar, seq_len):
         tokenizer = BertTokenizer.from_pretrained(bert_model, do_lower_case=True)
 
         # encoding has to be done during the initialisation, because torch expects all of the tensors output by __getitem__() to
@@ -316,39 +318,42 @@ class EncodedDataset(data.Dataset):
         # sequence index
         input_ids, attn_masks, labels, patient_ids = [], [], [], []
         for patient, note, label in zip(df.SUBJECT_ID, df[txtvar], df.READM):
-            encoded_dict = tokenizer.encode_plus(
+            encoding = tokenizer.encode_plus(
                 note,
                 add_special_tokens=True,
-                max_length=512,
+                truncation=True,
+                max_length=seq_len,
                 pad_to_max_length=True,
                 return_attention_mask=True,
                 return_tensors='pt',
                 return_overflowing_tokens=True
             )
-            input_ids.append(encoded_dict['input_ids'].reshape(512))
-            attn_masks.append(encoded_dict['attention_mask'].reshape(512))
+            input_ids.append(encoding['input_ids'].reshape(seq_len))
+            attn_masks.append(encoding['attention_mask'].reshape(seq_len))
             patient_ids.append(patient)
             labels.append(label)
 
-            if 'overflowing_tokens' in encoded_dict.keys():
-                overflow = encoded_dict['overflowing_tokens']
+            if 'overflowing_tokens' in encoding.keys():
+                overflow = encoding['overflowing_tokens']
                 n_overflow = len(overflow)
                 # split the overflowing tokens into sequences of size 512 and label them
                 # with the current subject identifier and label
-                for i in range(ceil(n_overflow/512)):
+                for i in range(ceil(n_overflow/seq_len)):
                     # duplicate ID and label for each sequence
                     patient_ids.append(patient)
                     labels.append(label)
-                    seq = overflow[512*i:512*(i+1)]
-                    if len(seq) == 512:
-                        attn_mask = torch.ones(512)
+                    overflow_seq = overflow[seq_len*i:seq_len*(i+1)]
+                    overflow_seq_len = overflow_seq.shape[1]
+                    if of_seq_lens == seq_len:
+                        attn_mask = torch.ones(seq_len)
                     else:
-                        short_seq_len = n_overflow-i*512
-                        seq += [0 for i in range(512-short_seq_len)]
-                        attn_mask = torch.cat(
-                            (torch.ones(short_seq_len), torch.zeros(512-short_seq_len))
+                        overflow_seq = torch.cat(
+                            (overflow_seq, torch.zeros(seq_len-overflow_seq_len))
                         )
-                    input_ids.append(torch.tensor(seq))
+                        attn_mask = torch.cat(
+                            (torch.ones(overflow_seq_len), torch.zeros(seq_len-overflow_seq_len))
+                        )
+                    input_ids.append(overflow_seq.long())
                     attn_masks.append(attn_mask.long())
 
         self.input_ids = input_ids
@@ -363,14 +368,11 @@ class EncodedDataset(data.Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        if type(self.patient_ids[idx]) != list:
-            self.patient_ids[idx] = [self.patient_ids[idx]]
-
         return {
             'input_ids' : self.input_ids[idx],
             'attn_masks' : self.attn_masks[idx],
             'labels' : torch.tensor(self.labels[idx]),
-            'patient_ids' : torch.tensor([int(p) for p in self.patient_ids[idx]])
+            'patient_ids' : torch.tensor(self.patient_ids[idx])
         }
 
 
@@ -387,16 +389,17 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
 
         params = [
             'n_train_fp', 'r_train_fp', 'n_test_fp', 'r_test_fp', # data file paths
-            'val_frac', 'batch_size', 'threads', # implementation arguments
-            'bert_model', 'txtvar', 'seqlen', 'st_aug', 'scale_factor', # language-model arguments
+            'val_frac', 'batch_size', 'threads', 'optimiser', # implementation arguments
+            'bert_model', 'txtvar', 'sequence_len', 'st_aug', 'proba_aggregation_scale_factor', # language-model arguments
             'db', # boolean - debug mode
-            'write_test_results_to',
+            'write_test_results_to', 'write_dev_results_to',
             'update_all_params', # bool: update the entire BERT model rather than just fine-tuning the final layer
             'verbose' #bool
         ]
         # TODO: add sequence length parameter
 
         # default arguments
+        self.optimiser = 'sgd'
         self.scale_factor = 2.0
         self.threads = torch.get_num_threads()
         self.db = False
@@ -419,6 +422,9 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
         # this function is not in versions <0.8.1
         self.save_hyperparameters('epochs', 'lr', 'momentum')
 
+        self.metrics = (M.Accuracy(), M.Precision(), M.Recall(), M.F1(), M.AUROC())
+        self.metric_names = ('acc', 'prec', 'recall', 'f1', 'auroc')
+
     def setup(self, stage):
 
         def _dataframe_setup(nfp, rfp, split=True):
@@ -431,6 +437,12 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
                 _slice=2*self.batch_size if self.db else None
             )
             labelled_text = text_df.merge(read_csv(rfp, index_col=0), on='SUBJECT_ID', how='left')
+
+            def _make_sample_weights(y):
+                class_weight = torch.as_tensor(len(y)/(len(np.unique(y))*np.bincount(y)))
+                return torch.tensor(
+                    [class_weight[0].item() if sample == 0 else class_weight[1].item() for sample in y]
+                )
 
             # add semantic type codes if specified
             if self.st_aug:
@@ -446,18 +458,18 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
                 val_df = labelled_text[labelled_text.SUBJECT_ID.isin(val_patients)]
                 train_df = labelled_text[~labelled_text.SUBJECT_ID.isin(val_df.SUBJECT_ID)]
 
-                return train_df, val_df
+                return train_df, val_df, _make_sample_weights(val_df.READM.values)
             else:
-                return labelled_text
+                return labelled_text, _make_sample_weights(labelled_text.READM.values)
 
         if stage == 'fit':
             if self.verbose:
                 print('Loading training & validation datasets...')
-            self.train_df, self.val_df = _dataframe_setup(self.n_train_fp, self.r_train_fp)
+            self.train_df, self.val_df, self.dev_sample_weight = _dataframe_setup(self.n_train_fp, self.r_train_fp)
         if stage == 'test':
             if self.verbose:
                 print('Loading test dataset...')
-            self.test_df = _dataframe_setup(self.n_test_fp, self.r_test_fp, split=False)
+            self.test_df, self.test_sample_weight = _dataframe_setup(self.n_test_fp, self.r_test_fp, split=False)
 
     def forward(self, input_ids, attn_masks):
         logits, = self.model(input_ids, attn_masks.float())
@@ -491,14 +503,25 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         logits = self.forward(batch['input_ids'], batch['attn_masks'])
         loss = self.loss(logits, batch['labels'])
-        acc = (logits.argmax(-1) == batch['labels']).float()
+        predictions = logits.argmax(-1)
 
-        return {'loss':loss, 'acc':acc}
+        return {'loss':loss.detach(), 'predictions':predictions.detach(), 'labels':batch['labels'].detach()}
 
     def validation_epoch_end(self, outputs):
         loss = torch.cat([o['loss'] for o in outputs], 0).mean()
-        acc = torch.cat([o['acc'] for o in outputs], 0).mean()
-        out = {'loss':loss, 'acc':acc}
+        predictions = torch.cat([o['predictions'] for o in outputs], 0)
+        labels = torch.cat([o['labels'] for o in outputs], 0)
+        if sum(labels).item() in [len(labels), 0.0]:
+            print('val labels all the same, skipping epoch_end step')
+        else:
+            out = {}
+            out.update((name, metric(predictions, labels).item()) for name, metric in zip(self.metric_names, self.metrics))
+
+        if self.write_dev_results_to is not None:
+            with open(self.write_dev_results_to, 'w+') as dev_log:
+                dev_log.write('-- DEV RESULTS --')
+                for k, v in out.items():
+                    dev_log.write(f'{k} : {v}')
 
         return {**out, 'log':out}
 
@@ -513,82 +536,87 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         logits = self.forward(batch['input_ids'], batch['attn_masks'])
-        scaled_logits, patient_labels = self._aggreg_subseq_logits(logits, batch['labels'], batch['patient_ids'])
-        loss = self.loss(scaled_logits, patient_labels)
-        predictions = scaled_logits.argmax(-1)
-        acc = (predictions == patient_labels).float()
-        labels_np = patient_labels.detach().numpy()
-        predictions_np = predictions.detach().numpy()
-        prec = precision_score(labels_np, predictions_np)
-        recall = recall_score(labels_np, predictions_np)
-        f1 = f1_score(labels_np, predictions_np)
-        auroc = roc_auc_score(labels_np, predictions_np)
+        loss = self.loss(scaled_logits, batch['labels'])
 
         return {
-            'loss':loss,
-            'acc':acc,
-            'prec':prec,
-            'recall':recall,
-            'f1':f1,
-            'auroc':auroc,
+            'loss':loss.detach(),
+            'logits':logits.detach(),
+            'labels':batch['labels'].detach(),
             'log':{'test_loss':loss}
         }
 
     def test_epoch_end(self, outputs):
         loss = torch.cat([o['loss'] for o in outputs]).mean()
-        acc = torch.cat([o['acc'] for o in outputs]).mean()
-        _mean_output = lambda metric, out: np.mean([o[metric] for o in out])
-        prec, recall, f1, auroc = map(
-            _mean_output,
-            ('prec', 'recall', 'f1', 'auroc'),
-            tuple([outputs for i in range(4)])
-        )
-        out = {'loss':float(loss), 'acc':float(acc), 'prec':prec, 'recall':recall, 'f1':f1, 'auroc':auroc}
+        logits, labels = self._aggreg_subseq_logits(outputs)
+        out = {'loss':float(loss)}
+        labels.cuda()
+        predictions = logits.argmax(-1).cuda()
+        out.update((name, metric(predictions, labels).item()) for name, metric in zip(self.metric_names, self.metrics))
+
         if self.write_test_results_to is not None:
             with open(self.write_test_results_to, 'w+') as test_log:
                 test_log.write('-- TEST RESULTS --\n')
                 for k, v in out.items():
-                    test_log.write('{} : {:.4f}\n'.format(k, v))
+                    test_log.write(f'{k} : {v}\n')
 
         return {**out, 'log':out}
 
     def configure_optimizers(self):
-        optim = SGD(
-            self.parameters(),
-            lr=self.hparams.lr,
-            momentum=self.hparams.momentum
-        )
-        sched = CyclicLR(
-            optim,
-            base_lr=1e-8,
-            max_lr=self.hparams.lr
-        )
-        return [optim], [sched]
+        if self.optimiser == 'sgd':
+            optim = SGD(
+                self.parameters(),
+                lr=self.hparams.lr,
+                momentum=self.hparams.momentum
+            )
+            sched = CyclicLR(
+                optim,
+                base_lr=1e-8,
+                max_lr=self.hparams.lr
+            )
+            return [optim], [sched]
+        elif self.optimiser == 'adam':
+            return AdamW(
+                self.parameters(),
+                lr=self.lr
+            )
+        else:
+            raise NameError('invalid string passed to optimiser argument')
 
-    def _aggreg_subseq_logits(self, logits, labels, patient_ids):
+    def _aggreg_subseq_logits(self, output_list):
         '''
         This aggregates across the estimated readmission probability for each of the
         subsequences associated with each patient and outputs a readmission probability
         for each patient along with the reduced list of labels with which to calculate
         the test metrics
         '''
-        def _scale(logits, c):
-            factor = len(logits)/c
+        def _scale(logits):
+            factor = len(logits)/self.proba_aggregation_scale_factor
             return (np.max(logits)+np.mean(logits)*factor)/(1+factor)
 
-        df = DataFrame()
-        df['id'] = patient_ids
-        df['r'] = labels
-        df['p1'] = logits[:, 0].detach().numpy()
-        df['p2'] = logits[:, 1].detach().numpy()
-
-        scaled_logits1, scaled_logits2 = map(
-            lambda v: df.loc[:, ['id', v]].groupby('id').agg(_scale, c=self.scale_factor)[v].values, ('p1', 'p2')
+        logits, labels, patient_ids = map(
+            lambda s: [o[s] for o in output_list],
+            ('logits', 'labels', 'patient_ids')
         )
-        scaled_logits1, scaled_logits2 = map(
-            lambda arr: torch.tensor(arr).reshape([len(arr), 1]), (scaled_logits1, scaled_logits2)
-        )
-        output_logits = torch.cat((scaled_logits1, scaled_logits2), dim=1)
-        output_labels = df.loc[:, ['id', 'r']].drop_duplicates().r.values
 
-        return output_logits, torch.tensor(output_labels)
+        patient_logit_map, label_list = {}, []
+        for patient, label, i in zip(patient_ids, labels, range(logits.shape[0])):
+            if patient not in paitent_logit_map:
+                patient_logit_map[patient] = logits[i,:]
+                label_list.append(label)
+            else:
+                patient_logit_map[patient] = torch.stack((patient_logit_map[patient, logits[i,:]]))
+        for j in range(logits.shape[1]):
+            out_logit_list = []
+            for _logits in patient_logit_map.values():
+                try:
+                    out_logit_list.append(_scale(_logits[:,j]))
+                except IndexError:
+                    out_logit_list.append(_logits[j])
+                if 'output_logits' in locals():
+                    output_logits = torch.cat(
+                        (output_logits, torch.tensor(out_logit_list).reshape((len(out_logit_list), 1))), dim=1
+                    )
+                else:
+                    output_logits = torch.tensor(out_logit_list).reshape((len(out_logit_list), 1))
+
+            return output_logits, torch.tensor(label_list)
