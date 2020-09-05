@@ -1,11 +1,14 @@
 # mimic3-textmining
-Clinical text-mining/machine learning project I did as part of my masters thesis at Laboratoire Informatique de Grenoble
+Clinical text-mining/machine learning project I did as part of my masters thesis at Laboratoire Informatique de Grenoble.
+
+# Dependencies
+* Scikit-learn 
 
 # The Dataset
-MIMIC-III (Medical Information Mart for Intensive Care) \citep{johnson1} is a large, freely available database comprising deidentified medical
+MIMIC-III (Medical Information Mart for Intensive Care) is a large, freely available database comprising deidentified medical
 information pertaining to patients admitted to the Beth Israel Deaconess Medical Center in Boston, Massachusetts, USA. It was compiled and released 
 as an open-source medical data resource to aid in the reproducibility of clinical studies which use electronic health records. It is available to
-researchers subject to a data use agreement, hosted at Physionet.org \citep{physionet} and is unique in that it is the only openly accessible dataset
+researchers subject to a data use agreement, hosted at Physionet.org and is unique in that it is the only openly accessible dataset
 of its kind. The patient information therein spans a period of over ten years. The iteration of the database used in these experiments is
 version 1.4.
 
