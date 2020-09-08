@@ -14,7 +14,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
-from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import BertTokenizer, BertForSequenceClassification, AdamW
 from math import ceil
 from random import sample
 from util import load_txt_df
@@ -143,9 +143,11 @@ class MIMICWord2VecReadmissionPredictor(object):
                 except KeyError:
                     continue
 
-            return np.array(patient_ids), text, np.array(labels), np.array(gridsearch_labels)
+            ret = tuple(np.array(patient_ids), text, np.array(labels), np.array(gridsearch_labels))
         else:
-            return np.array(patient_ids), text, np.array(labels)
+            ret = tuple(np.array(patient_ids), text, np.array(labels))
+
+        return ret
 
     def _load_train_data(self, corpus_fp, readm_fp, chunksize, adapt_for_gridsearch):
         self.train_patient_ids, self.train_text, self.train_labels, self.gridsearch_labels =\
@@ -273,16 +275,16 @@ epochs {self.w2v_agg_model.embedding.iter}\n-- DEVELOPMENT RESULTS --
         self.w2v_agg_model.embedding.train(
             self.test_text, total_examples=len(self.test_text), epochs=5
         )
-        X, test_labels = self._patient_aggregation(
+        X, agg_test_labels = self._patient_aggregation(
             self.w2v_agg_model.transform(self.test_text, assign_to_attr=False),
             labels=self.test_labels
         )
         test_pred = self.clf.predict(X)
         test_scores = self.clf.decision_function(X)
-        test_prec = precision_score(self.test_labels, test_pred)
-        test_recall = recall_score(self.test_labels, test_pred)
-        test_f1 = f1_score(self.test_labels, test_pred)
-        test_auroc = roc_auc_score(self.test_labels, test_scores)
+        test_prec = precision_score(agg_test_labels, test_pred)
+        test_recall = recall_score(agg_test_labels, test_pred)
+        test_f1 = f1_score(agg_test_labels, test_pred)
+        test_auroc = roc_auc_score(agg_test_labels, test_scores)
 
         if out_fp is not None:
             with open(out_fp, 'w+') as model_desc:
@@ -295,8 +297,8 @@ LR {self.w2v_agg_model.embedding.alpha}
 dim {self.w2v_agg_model.embedding.wv.vector_size}
 window {self.w2v_agg_model.embedding.window}
 epochs {self.w2v_agg_model.embedding.iter}\n-- TEST RESULTS --
-\n---\nScores\n---\nAccuracy {test_acc}, Precision {test_prec}, Recall {test_recall}, F1 = {test_f1}, AUROC {test_auroc}'''
-                )
+\n---\nScores\n---\nPrecision {test_prec}, Recall {test_recall}, F1 = {test_f1}, AUROC {test_auroc}'''
+                    )
 
         if save_model_fp is not None:
             self.w2v_agg_model.embedding.save(save_model_fp)
@@ -344,7 +346,7 @@ class EncodedDataset(data.Dataset):
                     labels.append(label)
                     overflow_seq = overflow[seq_len*i:seq_len*(i+1)]
                     overflow_seq_len = overflow_seq.shape[1]
-                    if of_seq_lens == seq_len:
+                    if overflow_seq_len == seq_len:
                         attn_mask = torch.ones(seq_len)
                     else:
                         overflow_seq = torch.cat(
@@ -400,8 +402,9 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
 
         # default arguments
         self.optimiser = 'sgd'
-        self.scale_factor = 2.0
         self.threads = torch.get_num_threads()
+        self.proba_aggregation_scale_factor = 2.0
+        self.sequence_len = 256
         self.db = False
         self.write_test_results_to = None
         self.update_all_params = False
@@ -477,7 +480,7 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
         return logits
 
     def train_dataloader(self):
-        train_ds = EncodedDataset(self.train_df, self.bert_model, self.txtvar)
+        train_ds = EncodedDataset(self.train_df, self.bert_model, self.txtvar, self.sequence_len)
         return data.DataLoader(
             train_ds,
             batch_size=self.batch_size,
@@ -492,7 +495,7 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
         return {'loss':loss, 'log':{'train_loss':float(loss)}}
 
     def val_dataloader(self):
-        val_ds = EncodedDataset(self.val_df, self.bert_model, self.txtvar)
+        val_ds = EncodedDataset(self.val_df, self.bert_model, self.txtvar, self.sequence_len)
         return data.DataLoader(
             val_ds,
             batch_size=self.batch_size,
@@ -514,7 +517,7 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
         if sum(labels).item() in [len(labels), 0.0]:
             print('val labels all the same, skipping epoch_end step')
         else:
-            out = {}
+            out = {'loss':loss}
             out.update((name, metric(predictions, labels).item()) for name, metric in zip(self.metric_names, self.metrics))
 
         if self.write_dev_results_to is not None:
@@ -526,7 +529,7 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
         return {**out, 'log':out}
 
     def test_dataloader(self):
-        test_ds = EncodedDataset(self.test_df, self.bert_model, self.txtvar)
+        test_ds = EncodedDataset(self.test_df, self.bert_model, self.txtvar, self.sequence_len)
         return data.DataLoader(
             test_ds,
             batch_size=self.batch_size,
@@ -536,7 +539,7 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         logits = self.forward(batch['input_ids'], batch['attn_masks'])
-        loss = self.loss(scaled_logits, batch['labels'])
+        loss = self.loss(logits, batch['labels'])
 
         return {
             'loss':loss.detach(),
@@ -600,7 +603,7 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
 
         patient_logit_map, label_list = {}, []
         for patient, label, i in zip(patient_ids, labels, range(logits.shape[0])):
-            if patient not in paitent_logit_map:
+            if patient not in patient_logit_map:
                 patient_logit_map[patient] = logits[i,:]
                 label_list.append(label)
             else:
