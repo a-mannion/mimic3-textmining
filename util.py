@@ -1,4 +1,4 @@
-from pandas import read_csv
+from pandas import read_csv, isna
 
 def load_txt_df(fp, var, st_aug, _slice=None):
     cols = ['SUBJECT_ID', 'HADM_ID', var]
