@@ -398,7 +398,6 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
             'update_all_params', # bool: update the entire BERT model rather than just fine-tuning the final layer
             'verbose' #bool
         ]
-        # TODO: add sequence length parameter
 
         # default arguments
         self.optimiser = 'sgd'
@@ -511,11 +510,9 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
         return {'loss':loss.detach(), 'predictions':predictions.detach(), 'labels':batch['labels'].detach()}
 
     def validation_epoch_end(self, outputs):
-        loss = torch.cat([o['loss'] for o in outputs], 0).mean()
-        predictions = torch.cat([o['predictions'] for o in outputs], 0)
-        labels = torch.cat([o['labels'] for o in outputs], 0)
+        loss, predictions, labels = map(lambda s: torch.cat([o[s] for o in outputs], 0), ('loss', 'predictions', 'labels'))
         if sum(labels).item() in [len(labels), 0.0]:
-            print('val labels all the same, skipping epoch_end step')
+            raise RuntimeWarning('val labels all the same, skipping epoch_end step')
         else:
             out = {'loss':loss}
             out.update((name, metric(predictions, labels).item()) for name, metric in zip(self.metric_names, self.metrics))
@@ -552,8 +549,9 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
         loss = torch.cat([o['loss'] for o in outputs]).mean()
         logits, labels = self._aggreg_subseq_logits(outputs)
         out = {'loss':float(loss)}
+        predictions = logits.argmax(-1)
         labels.cuda()
-        predictions = logits.argmax(-1).cuda()
+        predictions.cuda()
         out.update((name, metric(predictions, labels).item()) for name, metric in zip(self.metric_names, self.metrics))
 
         if self.write_test_results_to is not None:
