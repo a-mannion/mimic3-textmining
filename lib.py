@@ -620,4 +620,4 @@ class MIMICBERTReadmissionPredictor(pl.LightningModule):
                 else:
                     output_logits = torch.tensor(out_logit_list).reshape((len(out_logit_list), 1))
 
-            return output_logits, torch.tensor(label_list)
+        return output_logits, torch.tensor(label_list)
